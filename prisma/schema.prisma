@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  phone        String?
+  role         String     @default("AGENT")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  leads        Lead[]
+  properties   Property[]
+  aiRecords    AIRecord[]
+  subscription Subscription?
+  channels     TelegramChannel[]
+}
+
+model TelegramChannel {
+  id              String @id @default(uuid())
+  chatId          String @unique
+  channelUsername String?
+  userId          String
+  user            User   @relation(fields: [userId], references: [id])
+}
+
+model Property {
+  id            String   @id @default(uuid())
+  title         String
+  description   String?
+  price         Float?
+  location      String?
+  propertyType  String?  // Rent, Sale, etc.
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  
+  leads         Lead[]
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  VIEWING
+  SOLD
+}
+
+model Lead {
+  id             String     @id @default(uuid())
+  name             String
+  phone            String?
+  message          String?
+  source           String?    // TikTok, Telegram, etc.
+  propertyInterest String?
+  platformSource   String?    // TikTok, Telegram, Direct, etc.
+  status           LeadStatus @default(NEW)
+  budget         Float?
+  telegramId     String?    // Unique ID for Telegram user merging
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  userId         String
+  user           User       @relation(fields: [userId], references: [id])
+  
+  propertyId     String?
+  property       Property?  @relation(fields: [propertyId], references: [id])
+
+  notes          Note[]
+  reminders      Reminder[]
+}
+
+model Note {
+  id        String   @id @default(uuid())
+  text      String
+  createdAt DateTime @default(now())
+  
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+}
+
+model Reminder {
+  id        String   @id @default(uuid())
+  title     String?
+  dueAt     DateTime
+  isDone    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+}
+
+model AIRecord {
+  id         String   @id @default(uuid())
+  prompt     String
+  response   String
+  actionType String   // Caption, Reply
+  createdAt  DateTime @default(now())
+
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+}
+
+enum SubscriptionPlan {
+  TRIAL
+  BASIC
+  PRO
+  AGENCY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELED
+}
+
+model Subscription {
+  id               String           @id @default(uuid())
+  plan             SubscriptionPlan @default(TRIAL)
+  status           SubscriptionStatus @default(ACTIVE)
+  startsAt         DateTime         @default(now())
+  expiresAt        DateTime?
+  aiUsageToday     Int              @default(0)
+  aiUsageResetDate DateTime         @default(now())
+  
+  userId           String           @unique
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+}
+
