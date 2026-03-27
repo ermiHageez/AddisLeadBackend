@@ -16,7 +16,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+  res.json({ status: "OK the backend is running", timestamp: new Date().toISOString() });
 });
 
 // API Routes
