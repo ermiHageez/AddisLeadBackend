@@ -3,7 +3,10 @@ import {
     generateAIContent,
     getAIHistory,
     getMarketResearch,
-    getLeadAnalysis
+    getLeadAnalysis,
+    getFollowUp,
+    getMeetingSummary,
+    getClientSegmentation
 } from '../controllers/ai.controller.js';
 import { getAiUsage } from '../controllers/subscriptionController.js';
 import { authenticate } from '../middleware/auth.middleware.js';
@@ -32,5 +35,10 @@ router.get('/research', checkSubscription(['PRO', 'AGENCY']), getMarketResearch)
 // Advanced Analysis: Accessible by PRO and AGENCY only
 // Analyzes Activity Timeline and DB records for a specific lead
 router.get('/analysis/:leadId', checkSubscription(['PRO', 'AGENCY']), getLeadAnalysis);
+
+// New general CRM features
+router.get('/follow-up/:leadId', checkSubscription(['PRO', 'AGENCY']), getFollowUp);
+router.get('/meeting-summary/:leadId', checkSubscription(['PRO', 'AGENCY']), getMeetingSummary);
+router.get('/segmentation', checkSubscription(['PRO', 'AGENCY']), getClientSegmentation);
 
 export default router;

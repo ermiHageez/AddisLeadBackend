@@ -1,5 +1,12 @@
 import prisma from '../utils/prisma.js';
-import { generateContent, generateMarketResearch, generateLeadAnalysis } from '../services/ai.service.js';
+import { 
+    generateContent, 
+    generatePipelineAnalysis, 
+    generateLeadAnalysis, 
+    generateFollowUp, 
+    generateMeetingSummary, 
+    generateClientSegmentation 
+} from '../services/ai.service.js';
 
 // POST /api/ai/generate
 export const generateAIContent = async (req, res) => {
@@ -85,7 +92,8 @@ export const generateAIContent = async (req, res) => {
         }
 
         // Call real Gemini AI service
-        const aiResponse = await generateContent(enrichedPrompt, actionType);
+        // Call real Gemini AI service with new signature (actionType, prompt, context)
+        const aiResponse = await generateContent(actionType, enrichedPrompt);
 
         // Save the record for history
         const aiRecord = await prisma.aIRecord.create({
@@ -131,7 +139,7 @@ export const getAIHistory = async (req, res) => {
 export const getMarketResearch = async (req, res) => {
     try {
         const userId = req.user.id;
-        const aiResponse = await generateMarketResearch(userId);
+        const aiResponse = await generatePipelineAnalysis(userId);
 
         // Save the record for history
         await prisma.aIRecord.create({
@@ -189,5 +197,40 @@ export const getLeadAnalysis = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Lead not found' });
         }
         res.status(500).json({ success: false, message: 'Failed to generate lead analysis.' });
+    }
+};
+
+// GET /api/ai/follow-up/:leadId
+export const getFollowUp = async (req, res) => {
+    try {
+        const { leadId } = req.params;
+        const userId = req.user.id;
+        const response = await generateFollowUp(leadId, userId);
+        res.json({ success: true, data: { response } });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message || 'Failed to generate follow-up.' });
+    }
+};
+
+// GET /api/ai/meeting-summary/:leadId
+export const getMeetingSummary = async (req, res) => {
+    try {
+        const { leadId } = req.params;
+        const userId = req.user.id;
+        const response = await generateMeetingSummary(leadId, userId);
+        res.json({ success: true, data: { response } });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message || 'Failed to generate meeting summary.' });
+    }
+};
+
+// GET /api/ai/segmentation
+export const getClientSegmentation = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const response = await generateClientSegmentation(userId);
+        res.json({ success: true, data: { response } });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message || 'Failed to generate segmentation.' });
     }
 };

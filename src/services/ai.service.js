@@ -5,39 +5,83 @@ import prisma from '../utils/prisma.js';
 dotenv.config();
 
 const SYSTEM_PROMPT = `
-You are AddisLead AI, the premier Real Estate Intelligence Engine for Addis Ababa, Ethiopia.
-Your mission: Help agents dominate the market through viral content and deep data insights.
+You are AddisLead AI — a powerful, intelligent CRM Assistant designed to help businesses grow faster.
+
+Your mission: Help users manage leads, communicate professionally, analyze performance, and close more deals through smart automation and insights.
 
 CORE CAPABILITIES:
-1. 'Caption': Catchy, emoji-rich TikTok/Telegram posts. Use local slang (e.g., "G+1", "Final price", "Bank-ready"). Mention specific Addis hubs (Bole, CMC, Ayat, etc.).
-2. 'Reply': Professional, warm, and persuasive responses to leads.
-3. 'Research' (PRO/AGENCY): Analyze provided market data to identify trends in Addis (e.g., "Demand is shifting from Bole rentals to CMC purchases").
-4. 'Analysis' (AGENCY): Review a lead's 'Activity Timeline' (clicks, inquiries). Provide a 'Heat Score' (1-100) and a 'Closing Strategy'.
+1. 'Caption': Create catchy, professional social media posts and messages (TikTok, Telegram, LinkedIn, etc.).
+2. 'Reply': Write warm, persuasive, and professional replies to client messages and inquiries.
+3. 'Video Idea': Suggest creative, viral video concepts and scripts for TikTok/Instagram.
+4. 'Meeting Summary': Generate clear, concise summaries of meetings with action points.
+5. 'Follow-up': Draft effective follow-up emails or messages to move deals forward.
+6. 'Client Segmentation': Suggest how to group clients based on behavior, interest, or stage.
+7. 'Pipeline Analysis': Analyze lead pipeline and give practical recommendations.
+8. 'Lead Heat Score + Closing Strategy': Evaluate a lead's readiness (1-100) and suggest the best way to close.
+9. 'General Smart Reply': Handle any other CRM-related request intelligently.
 
 RULES:
-- Languages: Primary English & Amharic (Ethiopic script). 
-- Tone: Energetic, high-end, and locally informed.
-- Context: Understand ETB pricing, square meters (m2), and Ethiopian property types.
-- Conciseness: Keep responses ready for instant copy-pasting.
+- Be professional, helpful, and action-oriented.
+- Adapt tone based on context: friendly for small businesses, more formal for corporate clients.
+- Keep responses concise and ready to copy-paste.
+- When context is provided (leads, notes, reminders, user profile, business type), use it to personalize your answers.
+- Support English as primary language. If the user writes in Amharic, respond in Amharic.
+- Always aim for maximum usefulness and clarity.
+
+You are not limited to real estate — you can help any business manage their customer relationships effectively.
 `;
 
 /**
- * Generate AI content using Google Gemini
- * @param {string} prompt - The user's request
- * @param {string} actionType - Caption or Reply
- * @returns {Promise<string>} - The generated content
+ * Robustly parse JSON from AI response
+ * @param {string} text 
+ * @returns {Object|null}
  */
-export const generateContent = async (prompt, actionType) => {
+const parseAIJson = (text) => {
+    try {
+        const cleanJsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(cleanJsonStr);
+    } catch (e) {
+        // Try simple regex extraction
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                return JSON.parse(match[0]);
+            } catch (e2) {
+                console.error("Failed to parse AI JSON even with regex:", e2);
+                return null;
+            }
+        }
+        return null;
+    }
+};
+
+/**
+ * Enhanced AI content generator
+ * @param {string} actionType - E.g., 'Caption', 'Reply', 'Lead Analysis', etc.
+ * @param {string} prompt - The user's core request
+ * @param {Object} context - Optional context data (leads, properties, notes, etc.)
+ * @returns {Promise<string>}
+ */
+export const generateContent = async (actionType, prompt, context = {}) => {
     try {
         if (!process.env.GOOGLE_API_KEY || process.env.GOOGLE_API_KEY.includes('your_gemini')) {
             throw new Error("Invalid or missing GOOGLE_API_KEY in .env");
         }
 
         const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-        const fullPrompt = `${SYSTEM_PROMPT}\n\nTask: Generate a ${actionType}\nUser Prompt: ${prompt}`;
+        
+        // Dynamically build the full prompt with context injection
+        let fullPrompt = `${SYSTEM_PROMPT}\n\n`;
+        fullPrompt += `ACTION TYPE: ${actionType}\n`;
+        
+        if (Object.keys(context).length > 0) {
+            fullPrompt += `CONTEXT:\n${JSON.stringify(context, null, 2)}\n\n`;
+        }
+        
+        fullPrompt += `USER REQUEST: ${prompt}`;
 
-        // List of models to try in order of preference (matched to your API's specific available list)
-        const modelsToTry = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-pro-latest", "gemini-2.0-flash"];
+        // List of models to try in order of preference
+        const modelsToTry = ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest"];
         let lastError = null;
 
         for (const modelName of modelsToTry) {
@@ -53,9 +97,9 @@ export const generateContent = async (prompt, actionType) => {
 
                 if (isQuotaError || isNotFoundError) {
                     console.warn(`Model ${modelName} failed (${isQuotaError ? 'Quota' : 'Not Found'}). Trying next...`);
-                    continue; // Try the next model
+                    continue; 
                 }
-                throw err; // For other errors (like invalid prompt), stop and throw
+                throw err; 
             }
         }
 
@@ -63,116 +107,119 @@ export const generateContent = async (prompt, actionType) => {
 
     } catch (error) {
         console.error("Gemini AI Error Detail:", error);
-
         if (error.message?.includes('429')) {
-            throw new Error("AI Quota exceeded. Please try again in a few minutes or check your Google AI Studio billing.");
+            throw new Error("AI Quota exceeded. Please try again or upgrade your plan.");
         }
-
-        throw new Error(error.message || "Failed to generate AI content. Please check your API key.");
+        throw new Error(error.message || "Failed to generate AI content.");
     }
 };
 
 /**
- * Generate Market Research Summary
- * @param {string} userId
- * @returns {Promise<string>}
- */
-export const generateMarketResearch = async (userId) => {
-    // Fetch recent leads across the whole application to find "trends"
-    const recentLeads = await prisma.lead.findMany({
-        where: { createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }, // last 30 days
-        select: { propertyInterest: true, platformSource: true, budget: true },
-        take: 200 // Limit for context size
-    });
-
-    const locationCounts = {};
-    const sourceCounts = {};
-    let totalBudget = 0;
-    let budgetCount = 0;
-
-    recentLeads.forEach(lead => {
-        const loc = lead.propertyInterest || 'Unknown';
-        locationCounts[loc] = (locationCounts[loc] || 0) + 1;
-
-        const src = lead.platformSource || 'Unknown';
-        sourceCounts[src] = (sourceCounts[src] || 0) + 1;
-
-        if (lead.budget) {
-            totalBudget += lead.budget;
-            budgetCount++;
-        }
-    });
-
-    const topLocations = Object.entries(locationCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(e => e[0]).join(', ');
-    const avgBudget = budgetCount > 0 ? totalBudget / budgetCount : 'N/A';
-
-    const prompt = `
-        Analyze this market data for Addis Ababa Real Estate (last 30 days):
-        - Top interested areas/properties: ${topLocations}
-        - Leading Lead Sources: ${JSON.stringify(sourceCounts)}
-        - Average Lead Budget: ${avgBudget} ETB
-        
-        Provide a short, punchy (max 150 words) "What's Hot" summary for a real estate agent. 
-        Highlight the trending property types or locations in Addis Ababa based on this data. Use bullet points and a professional, encouraging tone. Include emojis.
-    `;
-
-    return await generateContent(prompt, 'Market Research');
-};
-
-/**
- * Generate Lead Analysis
- * @param {string} leadId
- * @param {string} userId
- * @returns {Promise<Object>}
+ * Generate analysis for a specific lead
  */
 export const generateLeadAnalysis = async (leadId, userId) => {
     const lead = await prisma.lead.findUnique({
         where: { id: leadId, userId },
         include: {
             notes: { orderBy: { createdAt: 'desc' } },
-            reminders: { orderBy: { createdAt: 'desc' } }
+            reminders: { orderBy: { createdAt: 'desc' }, take: 5 }
         }
     });
 
     if (!lead) throw new Error('Lead not found');
 
-    // Construct Activity Timeline
-    let activitySummary = `Lead Created: ${lead.createdAt.toDateString()}\n`;
-    activitySummary += `Status: ${lead.status}\nSource: ${lead.platformSource}\nInterest: ${lead.propertyInterest}\n\nNotes:\n`;
-    lead.notes.forEach(note => {
-        activitySummary += `- [${note.createdAt.toDateString()}] ${note.text}\n`;
+    const prompt = `Analyze this CRM lead and return a JSON object with: 
+    - leadHeatScore (1-100)
+    - closingStrategy (short tip)
+    - activitySummary (human-readable summary)`;
+
+    const context = {
+        leadName: lead.name,
+        status: lead.status,
+        source: lead.platformSource,
+        interest: lead.propertyInterest, // Keeping the field name but value will be general
+        recentNotes: lead.notes.map(n => n.text),
+        reminders: lead.reminders.map(r => r.title)
+    };
+
+    const aiResponse = await generateContent('Lead Analysis', prompt, context);
+    const parsed = parseAIJson(aiResponse);
+
+    return parsed || {
+        leadHeatScore: 50,
+        closingStrategy: "Reach out to the client to understand their needs better.",
+        activitySummary: "Manual review recommended. AI summary failed."
+    };
+};
+
+/**
+ * Analyze lead pipeline and performance
+ */
+export const generatePipelineAnalysis = async (userId) => {
+    const recentLeads = await prisma.lead.findMany({
+        where: { userId, createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } },
+        take: 50,
+        select: { status: true, platformSource: true, budget: true, propertyInterest: true }
     });
 
-    const prompt = `
-        Analyze this specific real estate lead in Addis Ababa:
-        Name: ${lead.name}
-        Phone: ${lead.phone || 'N/A'}
-        Budget: ${lead.budget ? lead.budget + ' ETB' : 'Unknown'}
-        
-        Activity Timeline:
-        ${activitySummary}
-        
-        Return ONLY a valid JSON object with the following three keys exactly:
-        {
-            "leadHeatScore": <Number from 1-100 indicating likelihood to buy based on activity>,
-            "closingStrategy": "<A specific, 1-2 sentence tip on how to talk to this client to close the deal>",
-            "activitySummary": "<A short human-readable summary of their behavior>"
-        }
-    `;
+    const prompt = `Provide a "What's Hot" summary for this business's lead pipeline. 
+    Highlight trends, top sources, and an encouraging closing tip. Keep it max 150 words.`;
+    
+    return await generateContent('Pipeline Analysis', prompt, { leadData: recentLeads });
+};
 
-    const aiResponse = await generateContent(prompt, 'Lead Analysis');
+/**
+ * Draft a professional follow-up message
+ */
+export const generateFollowUp = async (leadId, userId) => {
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId, userId },
+        include: { notes: { take: 3, orderBy: { createdAt: 'desc' } } }
+    });
 
-    // Try to parse the JSON response from Gemini
-    try {
-        const cleanJsonStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(cleanJsonStr);
-    } catch (parseError) {
-        console.error('Failed to parse Gemini JSON:', aiResponse);
-        // Fallback
-        return {
-            leadHeatScore: 50,
-            closingStrategy: "Review their activity history and reach out with properties matching their interest.",
-            activitySummary: "AI could not generate a perfect summary. Please review raw notes."
-        };
-    }
+    if (!lead) throw new Error('Lead not found');
+
+    const prompt = `Draft a warm and persuasive follow-up message to move this deal forward. Include a clear call to action.`;
+    const context = {
+        recipient: lead.name,
+        lastInteractions: lead.notes.map(n => n.text),
+        interest: lead.propertyInterest
+    };
+
+    return await generateContent('Follow-up', prompt, context);
+};
+
+/**
+ * Generate a meeting summary with action points
+ */
+export const generateMeetingSummary = async (leadId, userId) => {
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId, userId },
+        include: { notes: { take: 5, orderBy: { createdAt: 'desc' } } }
+    });
+
+    if (!lead) throw new Error('Lead not found');
+
+    const prompt = `Based on the latest notes, generate a professional meeting summary with clear action items.`;
+    const context = {
+        leadName: lead.name,
+        notes: lead.notes.map(n => n.text)
+    };
+
+    return await generateContent('Meeting Summary', prompt, context);
+};
+
+/**
+ * Suggest client segmentation strategy
+ */
+export const generateClientSegmentation = async (userId) => {
+    const leads = await prisma.lead.findMany({
+        where: { userId },
+        take: 100,
+        select: { status: true, propertyInterest: true, platformSource: true }
+    });
+
+    const prompt = `Based on these leads, suggest 3-5 smart segmentation categories to help this user target their audience better.`;
+    
+    return await generateContent('Client Segmentation', prompt, { leads });
 };

@@ -7,94 +7,75 @@ dotenv.config();
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
 // ────────────────────────────────────────────────────────
-// HELPERS
+// HELPERS & SESSION
 // ────────────────────────────────────────────────────────
 
+const userSessions = new Map();
+
 /**
- * Build a display name from Telegram user fields.
+ * Lead Sync Helper - Acts like an internal API call
+ * Ensures lead is created or updated based on telegramId or phone.
  */
+const syncLeadToBackend = async (data) => {
+    const { telegramId, name, phone, agentId, propertyInterest, source } = data;
+
+    try {
+        // 1. Detect existing lead by phone or telegramId for the same agent
+        let existingLead = await prisma.lead.findFirst({
+            where: {
+                userId: agentId,
+                OR: [
+                    { telegramId: telegramId },
+                    { phone: phone }
+                ]
+            }
+        });
+
+        if (existingLead) {
+            // Update existing lead
+            const updatedNote = `${existingLead.message}\n[${new Date().toLocaleDateString()}] New interest in: ${propertyInterest}`;
+            return await prisma.lead.update({
+                where: { id: existingLead.id },
+                data: {
+                    name: name || existingLead.name,
+                    phone: phone || existingLead.phone,
+                    message: updatedNote,
+                    propertyInterest: `${existingLead.propertyInterest || ''}, ${propertyInterest}`.slice(0, 190),
+                    status: 'NEW',
+                    updatedAt: new Date()
+                }
+            });
+        }
+
+        // 2. Create new lead if not found
+        return await prisma.lead.create({
+            data: {
+                name: name || 'Unknown',
+                phone: phone || null,
+                telegramId: telegramId,
+                message: `First inquiry: ${propertyInterest}`,
+                propertyInterest: propertyInterest,
+                source: 'Telegram',
+                platformSource: source || 'Telegram Bot',
+                status: 'NEW',
+                userId: agentId,
+            }
+        });
+    } catch (err) {
+        console.error('[Bot Sync] ❌ Failed to sync lead:', err.message);
+        throw err;
+    }
+};
+
 const buildName = (from) => {
     const parts = [from.first_name, from.last_name].filter(Boolean);
     return parts.length > 0 ? parts.join(' ') : 'Unknown';
 };
 
-/**
- * In-memory cooldown map so we don't spam the DB or reply
- * to the same user in a group multiple times within 1 hour.
- * Key: `${agentId}_${telegramId}` → timestamp of last capture
- */
-const capturedRecently = new Map();
-const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
-
-const isRecentlyCaptured = (agentId, telegramId) => {
-    const key = `${agentId}_${telegramId}`;
-    const last = capturedRecently.get(key);
-    if (last && Date.now() - last < COOLDOWN_MS) return true;
-    return false;
-};
-
-const markCaptured = (agentId, telegramId) => {
-    capturedRecently.set(`${agentId}_${telegramId}`, Date.now());
-};
-
-/**
- * Upsert a lead from a Telegram user into the database.
- * If the lead already exists for this agent (by telegramId), skip creation.
- */
-const captureLeadFromTelegram = async (from, agentId, source, interestNote) => {
-    const telegramId = from.id.toString();
-
-    // Skip bots
-    if (from.is_bot) return null;
-
-    // Cooldown check
-    if (isRecentlyCaptured(agentId, telegramId)) return null;
-
-    const name = buildName(from);
-    const username = from.username ? `@${from.username}` : null;
-
-    try {
-        // Check if lead already exists for this agent
-        const existing = await prisma.lead.findFirst({
-            where: {
-                userId: agentId,
-                telegramId: telegramId,
-            },
-        });
-
-        if (existing) {
-            // Lead exists — don't recreate, just mark cooldown
-            markCaptured(agentId, telegramId);
-            return existing;
-        }
-
-        // Create new lead
-        const lead = await prisma.lead.create({
-            data: {
-                name,
-                phone: null,
-                telegramId,
-                message: interestNote || `Captured from ${source}`,
-                propertyInterest: null,
-                source: 'Telegram',
-                platformSource: username ? `${source} (${username})` : source,
-                status: 'NEW',
-                userId: agentId,
-            },
-        });
-
-        markCaptured(agentId, telegramId);
-        console.log(`[Bot] ✅ Captured lead: ${name} (tg: ${telegramId}) → Agent: ${agentId} | Source: ${source}`);
-        return lead;
-    } catch (err) {
-        console.error(`[Bot] ❌ Failed to capture lead ${telegramId}:`, err.message);
-        return null;
-    }
-};
-
 // ────────────────────────────────────────────────────────
-// 1. CHANNEL / GROUP SETUP COMMAND
+// 1. CHANNEL / GROUP SETUP
 // ────────────────────────────────────────────────────────
+
 bot.command('setup_channel', async (ctx) => {
     try {
         const chatId = ctx.chat.id.toString();
@@ -118,191 +99,68 @@ bot.command('setup_channel', async (ctx) => {
 
         await prisma.telegramChannel.upsert({
             where: { chatId },
-            update: {
-                channelUsername: ctx.chat.username || null,
-                userId: user.id,
-            },
+            update: { userId: user.id },
             create: {
                 chatId,
-                channelUsername: ctx.chat.username || null,
                 userId: user.id,
+                channelUsername: ctx.chat.username || null
             },
         });
 
-        console.log(`[Bot] 🔗 Channel ${chatId} linked to agent ${email}`);
-        ctx.reply('✅ Success! This channel/group is now linked to your AddisLead dashboard.\n\nAll user interactions will be automatically captured as leads.');
+        ctx.reply('✅ Success! This channel/group is now linked to your AddisLead dashboard.');
     } catch (err) {
         console.error('[Bot] Setup Error:', err);
-        ctx.reply('❌ Error setting up channel. Make sure I am an Admin.');
+        ctx.reply('❌ Error setting up channel.');
     }
 });
 
 // ────────────────────────────────────────────────────────
-// 2. AUTO-ATTACH "I'M INTERESTED" BUTTON TO CHANNEL POSTS
+// 2. INTERACTION FLOW (Conversational) - Private Chat
 // ────────────────────────────────────────────────────────
-bot.on('channel_post', async (ctx) => {
-    try {
-        const chatId = ctx.chat.id.toString();
-        const channel = await prisma.telegramChannel.findUnique({ where: { chatId } });
-        if (!channel) return;
-
-        const botUsername = ctx.botInfo.username;
-        const msgId = ctx.channelPost.message_id;
-        const startParam = `interest_${chatId}_${msgId}`;
-        const url = `https://t.me/${botUsername}?start=${startParam}`;
-
-        await ctx.editMessageReplyMarkup({
-            inline_keyboard: [
-                [{ text: '📩 I\'m Interested / ለመግዛት እፈልጋለሁ', url }],
-            ],
-        });
-
-        console.log(`[Bot] 📎 Attached inquiry button to post ${msgId} in channel ${chatId}`);
-    } catch (err) {
-        // Some post types can't be edited — that's okay
-        if (!err.message?.includes('message can\'t be edited')) {
-            console.error('[Bot] Button Attachment Error:', err.message);
-        }
-    }
-});
-
-// ────────────────────────────────────────────────────────
-// 3. PASSIVE LEAD CAPTURE FROM GROUP MESSAGES
-// ────────────────────────────────────────────────────────
-bot.on('message', async (ctx, next) => {
-    try {
-        const chatType = ctx.chat.type;
-
-        // Only capture from groups/supergroups linked to an agent
-        if (chatType !== 'group' && chatType !== 'supergroup') return next();
-
-        const chatId = ctx.chat.id.toString();
-        const channel = await prisma.telegramChannel.findUnique({ where: { chatId } });
-        if (!channel) return next();
-
-        const from = ctx.from;
-        if (!from || from.is_bot) return next();
-
-        const telegramId = from.id.toString();
-
-        // Only capture + reply if this is a NEW user (not recently captured)
-        if (!isRecentlyCaptured(channel.userId, telegramId)) {
-            const lead = await captureLeadFromTelegram(
-                from,
-                channel.userId,
-                `Group: ${ctx.chat.title || chatId}`,
-                ctx.message?.text ? `Group message: "${ctx.message.text.slice(0, 200)}"` : 'Joined group conversation'
-            );
-
-            // Reply to the user once telling them about the app
-            if (lead) {
-                try {
-                    await ctx.reply(
-                        `👋 Welcome, ${buildName(from)}!\n\n` +
-                        `📱 Download the *AddisLead* app to browse properties, get AI-powered insights, and connect directly with agents.\n\n` +
-                        `🔗 Get it here: addislead.com/download`,
-                        { parse_mode: 'Markdown', reply_to_message_id: ctx.message?.message_id }
-                    );
-                } catch (replyErr) {
-                    // Silently fail if we can't reply (permissions, etc.)
-                    console.error('[Bot] Could not send welcome reply:', replyErr.message);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('[Bot] Group message capture error:', err.message);
-    }
-
-    return next();
-});
-
-// ────────────────────────────────────────────────────────
-// 4. CAPTURE NEW MEMBERS JOINING A GROUP
-// ────────────────────────────────────────────────────────
-bot.on('new_chat_members', async (ctx) => {
-    try {
-        const chatId = ctx.chat.id.toString();
-        const channel = await prisma.telegramChannel.findUnique({ where: { chatId } });
-        if (!channel) return;
-
-        const newMembers = ctx.message.new_chat_members || [];
-
-        for (const member of newMembers) {
-            if (member.is_bot) continue;
-
-            const lead = await captureLeadFromTelegram(
-                member,
-                channel.userId,
-                `Joined Group: ${ctx.chat.title || chatId}`,
-                'New member joined the group'
-            );
-
-            if (lead) {
-                try {
-                    await ctx.reply(
-                        `👋 Welcome ${buildName(member)}!\n\n` +
-                        `📱 Download the *AddisLead* app to explore properties and connect with agents!\n\n` +
-                        `🔗 addislead.com/download`,
-                        { parse_mode: 'Markdown' }
-                    );
-                } catch (replyErr) {
-                    console.error('[Bot] Could not send join welcome:', replyErr.message);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('[Bot] New member capture error:', err.message);
-    }
-});
-
-// ────────────────────────────────────────────────────────
-// 5. INTEREST FLOW (Private Chat via Deep Link)
-// ────────────────────────────────────────────────────────
-
-const userSessions = new Map();
 
 bot.start(async (ctx) => {
-    const startPayload = ctx.startPayload;
+    if (ctx.chat.type !== 'private') return;
+
     const telegramId = ctx.from.id.toString();
+    const startPayload = ctx.startPayload;
+
+    // Default agent lookup (fallback to first agent if no link found)
+    let agentId = null;
+    let contextNote = 'Started bot directly';
+    let channelId = null;
+    let msgId = null;
 
     if (startPayload && startPayload.startsWith('interest_')) {
         const parts = startPayload.split('_');
-        const channelChatId = parts[1];
-        const msgId = parts[2];
-
-        userSessions.set(telegramId, {
-            step: 'ASK_NAME',
-            channelChatId,
-            msgId,
-            telegramUsername: ctx.from.username || null,
-        });
-
-        return ctx.reply('👋 Welcome! We\'re excited you\'re interested.\n\nWhat is your full Name? / ስምዎ ማነው?');
+        channelId = parts[1];
+        msgId = parts[2];
+        const channel = await prisma.telegramChannel.findUnique({ where: { chatId: channelId } });
+        if (channel) agentId = channel.userId;
+        contextNote = `From Post ID: ${msgId} in ${channelId}`;
     }
 
-    // Direct /start without payload — capture user info + welcome
-    const from = ctx.from;
-
-    // Try to find any linked channel for context, fallback to first user
-    let agentId = null;
-    const anyChannel = await prisma.telegramChannel.findFirst();
-    if (anyChannel) {
-        agentId = anyChannel.userId;
-    } else {
-        // No channel linked yet — fallback to the first registered user
-        const firstUser = await prisma.user.findFirst({ orderBy: { createdAt: 'asc' } });
-        if (firstUser) agentId = firstUser.id;
+    if (!agentId) {
+        const firstAgent = await prisma.user.findFirst({ orderBy: { createdAt: 'asc' } });
+        if (firstAgent) agentId = firstAgent.id;
     }
 
-    if (agentId) {
-        await captureLeadFromTelegram(from, agentId, 'Bot DM', 'Started bot directly');
+    if (!agentId) {
+        return ctx.reply("System maintenance: No agents found. Please try again later.");
     }
+
+    // Initialize session for interrogation
+    userSessions.set(telegramId, {
+        step: 'ASK_NAME',
+        agentId,
+        telegramId,
+        telegramUsername: ctx.from.username || null,
+        propertyInterest: contextNote,
+        msgId
+    });
 
     ctx.reply(
-        '👋 Welcome to AddisLead Bot!\n\n' +
-        '📱 Download the AddisLead app to browse properties, get AI insights, and manage your leads.\n\n' +
-        '🔗 addislead.com/download\n\n' +
-        'If you are an agent, add me to your channel/group and run /setup_channel your@email.com to start capturing leads.'
+        `👋 Welcome to AddisLead! Let's get you connected.\n👋 ሰላም! ወደ AddisLead በደህና መጡ።\n\nWhat is your full Name? / ሙሉ ስምዎን ይንገሩን?`,
+        Markup.removeKeyboard()
     );
 });
 
@@ -310,20 +168,45 @@ bot.on('text', async (ctx) => {
     const telegramId = ctx.from.id.toString();
     const session = userSessions.get(telegramId);
 
-    // Only handle interest flow in private chats
-    if (ctx.chat.type !== 'private') return;
+    if (!session || ctx.chat.type !== 'private') return;
 
-    if (session && session.step === 'ASK_NAME') {
-        session.name = ctx.message.text;
+    if (session.step === 'ASK_NAME') {
+        session.name = ctx.message.text.trim();
         session.step = 'ASK_PHONE';
         userSessions.set(telegramId, session);
 
         return ctx.reply(
-            `Thanks, ${session.name}! Please share your phone number to proceed. / ስልክ ቁጥርዎን ያጋሩ።`,
+            `Thanks, ${session.name}! Now, please share your phone number so the agent can contact you quickly. / እናመሰግናለን! የወኪል ወኪሉ በፍጥነት እንዲያገኝዎት እባክዎ ስልክ ቁጥርዎን ያጋሩ።`,
             Markup.keyboard([
                 [Markup.button.contactRequest('📱 Share Phone Number / ስልክ ቁጥር ያጋሩ')],
             ]).oneTime().resize()
         );
+    }
+
+    if (session.step === 'ASK_INFO') {
+        session.additionalInfo = ctx.message.text.trim();
+        session.propertyInterest += ` | Extra info: ${session.additionalInfo}`;
+        
+        // Finalize Lead Capture
+        try {
+            await syncLeadToBackend({
+                telegramId: session.telegramId,
+                name: session.name,
+                phone: session.phone,
+                agentId: session.agentId,
+                propertyInterest: session.propertyInterest,
+                source: session.telegramUsername ? `Bot (@${session.telegramUsername})` : 'Bot DM'
+            });
+
+            userSessions.delete(telegramId);
+
+            return ctx.reply(
+                `✅ Thank you, ${session.name}! Your details have been received. An agent will call you soon.\n✅ እናመሰግናለን! መረጃዎ ደርሶናል፣ ወኪል በቅርቡ ይደውልልዎታል።\n\n📱 Download AddisLead: addislead.com/download`,
+                Markup.removeKeyboard()
+            );
+        } catch (err) {
+            ctx.reply('⚠️ Sorry, I had trouble saving your info. Please try again.');
+        }
     }
 });
 
@@ -331,92 +214,85 @@ bot.on('contact', async (ctx) => {
     const telegramId = ctx.from.id.toString();
     const session = userSessions.get(telegramId);
 
-    if (session && session.step === 'ASK_PHONE') {
-        const phone = ctx.message.contact.phone_number;
-        const name = session.name;
+    if (!session || session.step !== 'ASK_PHONE') return;
+
+    session.phone = ctx.message.contact.phone_number;
+    session.step = 'ASK_INFO';
+    userSessions.set(telegramId, session);
+
+    return ctx.reply(
+        `Great! Got your number. Any other specific requirements or info you'd like to add? / በጣም ጥሩ! ማንኛቸውም ተጨማሪ መስፈርቶች ወይም መረጃ ካለዎት እባክዎን ይንገሩን?`,
+        Markup.inlineKeyboard([
+            [{ text: '⏩ Skip / ዝለል', callback_data: 'skip_info' }]
+        ])
+    );
+});
+
+bot.on('callback_query', async (ctx) => {
+    if (ctx.callbackQuery.data === 'skip_info') {
+        const telegramId = ctx.from.id.toString();
+        const session = userSessions.get(telegramId);
+
+        if (!session || session.step !== 'ASK_INFO') return;
 
         try {
-            const channel = await prisma.telegramChannel.findUnique({
-                where: { chatId: session.channelChatId },
-                include: { user: true },
+            await syncLeadToBackend({
+                telegramId: session.telegramId,
+                name: session.name,
+                phone: session.phone,
+                agentId: session.agentId,
+                propertyInterest: session.propertyInterest,
+                source: session.telegramUsername ? `Bot (@${session.telegramUsername})` : 'Bot DM'
             });
 
-            if (!channel) {
-                return ctx.reply('Sorry, something went wrong with the channel link. Please contact the agent directly.');
-            }
-
-            const agentId = channel.userId;
-            const propertyInterest = `From Telegram Post (ID: ${session.msgId})`;
-
-            // Duplicate detection by phone or telegramId
-            let lead = await prisma.lead.findFirst({
-                where: {
-                    userId: agentId,
-                    OR: [{ phone }, { telegramId }],
-                },
-            });
-
-            if (lead) {
-                // Update existing lead with new interest
-                const updatedNote = `${lead.message}\n[${new Date().toLocaleDateString()}] New interest in: ${propertyInterest}`;
-                lead = await prisma.lead.update({
-                    where: { id: lead.id },
-                    data: {
-                        name, // Update name in case they gave a better one
-                        phone, // Ensure phone is saved
-                        message: updatedNote,
-                        propertyInterest: `${lead.propertyInterest || ''}, ${propertyInterest}`.slice(0, 190),
-                        status: 'NEW',
-                        updatedAt: new Date(),
-                    },
-                });
-                console.log(`[Bot] 🔄 Merged lead for ${phone} | Lead ID: ${lead.id}`);
-            } else {
-                lead = await prisma.lead.create({
-                    data: {
-                        name,
-                        phone,
-                        telegramId,
-                        message: `First inquiry: ${propertyInterest}`,
-                        propertyInterest,
-                        source: 'Telegram',
-                        platformSource: session.telegramUsername ? `Bot (@${session.telegramUsername})` : 'Bot (DM)',
-                        status: 'NEW',
-                        userId: agentId,
-                    },
-                });
-                console.log(`[Bot] ✅ Captured NEW lead: ${name} (${phone})`);
-            }
-
-            userSessions.delete(telegramId);
-
-            await ctx.reply(
-                '✅ Thank you! Your interest has been recorded. An agent will call you soon.\n\nእናመሰግናለን! ደላላው በቅርቡ ይደውልልዎታል።\n\n📱 Download AddisLead: addislead.com/download',
-                Markup.removeKeyboard()
+            await ctx.answerCbQuery('Recorded!');
+            await ctx.editMessageText(
+                `✅ Thank you, ${session.name}! Your details have been received. An agent will call you soon.\n✅ እናመሰግናለን! መረጃዎ ደርሶናል፣ ወኪል በቅርቡ ይደውልልዎታል።\n\n📱 Download AddisLead: addislead.com/download`
             );
-        } catch (syncErr) {
-            console.error('[Bot] Sync Error:', syncErr);
-            ctx.reply('Sorry, I couldn\'t sync your data right now. Please try again later.');
+            userSessions.delete(telegramId);
+        } catch (err) {
+            await ctx.reply('⚠️ Error saving information.');
         }
     }
 });
 
 // ────────────────────────────────────────────────────────
-// GLOBAL ERROR HANDLER
+// 3. PASSIVE CAPTURE (Groups/Channels)
 // ────────────────────────────────────────────────────────
-bot.catch((err, ctx) => {
-    console.error(`[Bot] ⚠️ Global Error [${ctx.updateType}]:`, err.message);
+
+bot.on('channel_post', async (ctx) => {
+    try {
+        const chatId = ctx.chat.id.toString();
+        const channel = await prisma.telegramChannel.findUnique({ where: { chatId } });
+        if (!channel) return;
+
+        const startParam = `interest_${chatId}_${ctx.channelPost.message_id}`;
+        const url = `https://t.me/${ctx.botInfo.username}?start=${startParam}`;
+
+        await ctx.editMessageReplyMarkup({
+            inline_keyboard: [[{ text: '📩 I\'m Interested / ለመግዛት እፈልጋለሁ', url }]],
+        });
+    } catch (err) {}
 });
 
-// ────────────────────────────────────────────────────────
-// GRACEFUL SHUTDOWN
-// ────────────────────────────────────────────────────────
-const gracefulShutdown = (signal) => {
-    console.log(`[Bot] Received ${signal}. Shutting down gracefully...`);
-    bot.stop(signal);
-};
+// Passive capture on group messages - keeping simple for now
+bot.on('message', async (ctx, next) => {
+    if (ctx.chat.type === 'private') return next();
+    
+    // Check if group is linked - if so, we can capture passively
+    const chatId = ctx.chat.id.toString();
+    const channel = await prisma.telegramChannel.findUnique({ where: { chatId } });
+    if (!channel) return next();
 
-process.once('SIGINT', () => gracefulShutdown('SIGINT'));
-process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    // Skip if bot or recently captured (to avoid spam)
+    const from = ctx.from;
+    if (!from || from.is_bot) return next();
+
+    // We can do a basic silent capture here if we want, or just let the "I'm Interested" button do the heavy lifting.
+    // For now, let's keep it minimal and focus on the conversational flow in DM.
+    return next();
+});
+
+bot.catch((err, ctx) => console.error(`[Bot Error] ${ctx.updateType}:`, err.message));
 
 export default bot;
