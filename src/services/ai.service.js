@@ -80,8 +80,12 @@ export const generateContent = async (actionType, prompt, context = {}) => {
         
         fullPrompt += `USER REQUEST: ${prompt}`;
 
-        // List of models to try in order of preference
-        const modelsToTry = ["gemini-1.5-flash-latest", "gemini-2.0-flash", "gemini-1.5-pro-latest"];
+        // Updated list of models to try in order of preference to avoid 404 errors with '-latest' suffix
+        const modelsToTry = [
+            "gemini-1.5-flash",      // Fast and reliable - primary choice
+            "gemini-1.5-pro",        // More powerful
+            "gemini-1.5-flash-8b",   // Lightweight fast variant
+        ];
         let lastError = null;
 
         for (const modelName of modelsToTry) {
