@@ -80,11 +80,11 @@ export const generateContent = async (actionType, prompt, context = {}) => {
         
         fullPrompt += `USER REQUEST: ${prompt}`;
 
-        // Updated list of models to try in order of preference to avoid 404 errors with '-latest' suffix
+        // Updated for 2026: Using Gemini 2.5 and 3.1 series as 1.5 series is retired
         const modelsToTry = [
-            "gemini-1.5-flash",      // Fast and reliable - primary choice
-            "gemini-1.5-pro",        // More powerful
-            "gemini-1.5-flash-8b",   // Lightweight fast variant
+            "gemini-2.5-flash",      // Primary stable choice (GA)
+            "gemini-2.5-pro",        // More powerful stable choice (GA)
+            "gemini-3.1-flash",      // Next-gen high performance (Preview)
         ];
         let lastError = null;
 
