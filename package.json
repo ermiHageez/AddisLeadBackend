@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "build": "echo 'No build step needed'"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
