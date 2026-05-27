@@ -7,7 +7,8 @@ import {
     deleteLead,
     updateLeadStatus,
     addLeadNote,
-    addLeadReminder
+    addLeadReminder,
+    createLeadFromTikTok
 } from '../controllers/lead.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { validate } from '../middleware/validate.middleware.js';
@@ -18,6 +19,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', getLeads);
+router.post('/from-tiktok', createLeadFromTikTok);
 router.post('/', validate(createLeadSchema), createLead);
 router.get('/:id', getLeadById);
 router.patch('/:id', validate(updateLeadSchema), updateLead);

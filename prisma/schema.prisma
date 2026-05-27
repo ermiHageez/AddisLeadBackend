@@ -23,6 +23,38 @@ model User {
   subscription Subscription?
   channels     TelegramChannel[]
   tasks        Task[]
+  tiktokAccount TikTokAccount?
+}
+
+model TikTokAccount {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tiktokUserId String   @unique
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  username     String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  monitoredVideos MonitoredVideo[]
+}
+
+model MonitoredVideo {
+  id              String   @id @default(uuid())
+  tiktokVideoId   String   @unique
+  caption         String?
+  thumbnailUrl    String?
+  viewCount       Int      @default(0)
+  commentCount    Int      @default(0)
+  isMonitoring    Boolean  @default(true)
+  lastChecked     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tiktokAccountId String
+  tiktokAccount   TikTokAccount @relation(fields: [tiktokAccountId], references: [id], onDelete: Cascade)
 }
 
 model TelegramChannel {
@@ -68,6 +100,8 @@ model Lead {
   status           LeadStatus @default(NEW)
   budget         Float?
   telegramId     String?    // Unique ID for Telegram user merging
+  tiktokCommentId String?    @unique
+  tiktokVideoId   String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
   userId         String
@@ -132,6 +166,9 @@ model Subscription {
   expiresAt        DateTime?
   aiUsageToday     Int              @default(0)
   aiUsageResetDate DateTime         @default(now())
+  
+  tiktokUsageToday     Int              @default(0)
+  tiktokUsageResetDate DateTime         @default(now())
   
   userId           String           @unique
   user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -227,3 +227,41 @@ export const addLeadReminder = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
+
+export const createLeadFromTikTok = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { username, text, tiktokCommentId, videoId, phone } = req.body;
+
+        if (!username || !tiktokCommentId) {
+            return res.status(400).json({ success: false, message: 'Missing TikTok comment data' });
+        }
+
+        const existing = await prisma.lead.findUnique({
+            where: { tiktokCommentId }
+        });
+
+        if (existing) {
+            return res.status(409).json({ success: false, message: 'Lead already created from this comment' });
+        }
+
+        const lead = await prisma.lead.create({
+            data: {
+                name: username,
+                phone: phone || null,
+                message: text,
+                source: 'TikTok',
+                platformSource: 'TikTok Video',
+                tiktokCommentId,
+                tiktokVideoId: videoId,
+                status: 'NEW',
+                userId
+            }
+        });
+
+        res.status(201).json({ success: true, data: lead });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Failed to create lead from TikTok' });
+    }
+};

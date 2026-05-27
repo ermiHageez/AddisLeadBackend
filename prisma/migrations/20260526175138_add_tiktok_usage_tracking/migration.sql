@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Subscription" ADD COLUMN     "tiktokUsageResetDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN     "tiktokUsageToday" INTEGER NOT NULL DEFAULT 0;
