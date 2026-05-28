@@ -8,10 +8,12 @@
   "license": "ISC",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "npm run migrate:deploy && node src/server.js",
     "dev": "nodemon src/server.js",
     "postinstall": "prisma generate",
-    "build": "echo 'No build step needed'"
+    "build": "echo 'No build step needed'",
+    "migrate:deploy": "prisma migrate deploy",
+    "prisma:generate": "prisma generate"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
